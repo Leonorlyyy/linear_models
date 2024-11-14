@@ -1,0 +1,259 @@
+---
+title: "bootstrap"
+author: "Leonor Rui"
+date: "2024-11-14"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(modelr)
+library(p8105.datasets)
+
+set.seed(1)
+```
+
+```{r}
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+
+## Bootsrapping!
+
+Make up some data
+
+```{r}
+n_samp = 250
+
+sim_df_constant = 
+  tibble(
+    x = rnorm(n_samp, 1, 1),
+    error = rnorm(n_samp, 0, 1),
+    y = 2 + 3 * x + error
+  )
+ 
+## error based on x
+sim_df_nonconstant = 
+  sim_df_constant |>
+  mutate(error = error * 0.75 * x,
+         y = 2 + 3 * x + error)
+```
+
+Look at these
+
+```{r}
+sim_df_constant |>
+  ggplot(aes(x = x, y = y)) +
+  geom_point() +
+  stat_smooth(method = "lm")
+
+sim_df_nonconstant |>
+  ggplot(aes(x = x, y = y)) +
+  geom_point() +
+  stat_smooth(method = "lm")
+```
+
+Look at regression results
+
+```{r}
+sim_df_nonconstant |>
+  lm(y ~ x, data = _) |>
+  broom::tidy() |>
+  knitr::kable(digits = 3)
+
+sim_df_constant |>
+  lm(y ~ x, data = _) |>
+  broom::tidy() |>
+  knitr::kable(digits = 3)
+```
+
+## Draw a bootsrap sample
+
+```{r}
+boot_sample = function(df) {
+  
+  boot_df = sample_frac(df, replace = TRUE)|>
+    arrange(x)
+  
+  return(boot_df)
+}
+```
+
+Let's try running this
+
+```{r}
+## Certain points show up multiple times
+sim_df_nonconstant |>
+  boot_sample() |>
+  ggplot(aes(x = x, y = y)) +
+  geom_point(alpha = 0.5) +
+  stat_smooth(method = "lm")
+```
+
+Do this as part of analysis
+
+```{r}
+sim_df_nonconstant |>
+  boot_sample() |>
+  lm(y ~ x, data = _) |>
+  broom::tidy() |>
+  knitr::kable(digits = 3)
+```
+
+## Bootsrap A LOT
+
+(Construct a simulated distribution of slope)
+
+analyze 1000 bootsrap samples, take the standard deviation of the estimates (Standard Error)
+
+Because the assumption of normal error term is violated, the boostrap SEs are not very similar to the original ones
+
+```{r}
+boot_straps = 
+  tibble(
+    strap_number = 1:1000
+  ) |>
+  mutate(
+    ## run the function for i times, i = strap_number
+    strap_sample = map(strap_number, \(i) boot_sample(df = sim_df_nonconstant)),
+    models = map(strap_sample, \(df) lm(y ~ x, data = df)),
+    results = map(models, broom::tidy)
+  )
+
+bootstrap_results = 
+  boot_straps |>
+  select(strap_number, results) |>
+  unnest(results) |>
+  group_by(term) |>
+  summarise(
+    boot_se = sd(estimate)
+  )
+```
+
+If the assumption of normal error is satisfied, the bootsrap SEs will be almost the same with the original ones
+
+```{r}
+boot_straps = 
+  tibble(
+    strap_number = 1:1000
+  ) |>
+  mutate(
+    ## run the function for i times, i = strap_number
+    strap_sample = map(strap_number, \(i) boot_sample(df = sim_df_constant)),
+    models = map(strap_sample, \(df) lm(y ~ x, data = df)),
+    results = map(models, broom::tidy)
+  )
+
+bootstrap_results = 
+  boot_straps |>
+  select(strap_number, results) |>
+  unnest(results) |>
+  group_by(term) |>
+  summarise(
+    boot_se = sd(estimate)
+  )
+```
+
+## Do this all using modelr
+
+```{r}
+boot_straps =
+  sim_df_nonconstant |>
+  modelr::bootstrap(1000) |>
+  mutate(
+    strap = map(strap, as_tibble),
+    models = map(strap, \(df) lm(y ~ x, data = df)),
+    results = map(models, broom::tidy)
+  ) |>
+  select(.id, results) |>
+  unnest(results)
+```
+
+what you want to report
+
+```{r}
+boot_straps |>
+  group_by(term) |>
+  summarise(
+    boot_est = mean(estimate),
+    boot_se = sd(estimate),
+    boot_cl_ll = quantile(estimate, .025),
+    boot_cl_ul = quantile(estimate, .975)
+  )
+```
+
+## AirBNB dataset
+
+```{r}
+data("nyc_airbnb")
+
+manhattan_df = nyc_airbnb |>
+  mutate(stars = review_scores_location / 2) |>
+  rename(borough = neighbourhood_group, neighborhood = neighbourhood) |>
+  filter(borough == "Manhattan") |>
+  select(price, stars, room_type) |>
+  drop_na()
+```
+
+Plot the data
+
+```{r}
+manhattan_df |>
+  ggplot(aes(x = stars, y = price)) +
+  geom_point() +
+  stat_smooth(method = "lm", se = FALSE)
+```
+
+fit a regression
+
+```{r}
+manhattan_df |>
+  lm(price ~ stars + room_type, data = _) |>
+  broom::tidy() |>
+  knitr::kable(digits = 3)
+```
+
+Bootstrap  for better inference
+
+```{r}
+manhattan_df |>
+  modelr::bootstrap(1000) |>
+  mutate(
+    strap = map(strap, as_tibble),
+    models = map(strap, \(df) lm(price ~ stars + room_type, data = df)),
+    results = map(models, broom::tidy)
+  ) |>
+  select(.id, results) |>
+  unnest(results) |>
+  filter(term == "stars") |>
+  ggplot(aes(estimate)) +
+  geom_density()
+```
+
+Find the true distribution of the estimate of price 
+
+
+
+
+
+
+
+
+
+
